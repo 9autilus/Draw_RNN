@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 
 from keras.layers import Input, Dense, SimpleRNN
 from keras.models import Sequential, load_model, save_model
-from keras.optimizers import RMSprop
+from keras.optimizers import RMSprop, SGD
+import keras.backend as K
 
 def plot_signals(signals):
     plt.plot(signals[:, 0])
@@ -26,8 +27,11 @@ def get_model(batch_shape, num_hidden_units, num_output):
     return model
 
 def compile_model(model):
-    rms = RMSprop(0.001, decay=0.0)
-    model.compile(optimizer=rms, loss='mse')
+    # The loss fluctuates after certain epochs with rmsprop
+    # possibly because our setup doesn't have epochs-setup
+    # opt = RMSprop(0.0001)
+    opt = SGD(0.01) # The loss monotonically decreases with SGD
+    model.compile(optimizer=opt, loss='mse')
 
 def dump_train_history(history, val_set_present, log_file_name):
     f = open(log_file_name, "w")
@@ -61,21 +65,30 @@ def dump_train_history(history, val_set_present, log_file_name):
 def run_part_a(m, x, y, batch_size):
     train_epochs = 100
     test_trajectories = 10
-    train = 1 # Whether to train or load a trained model
+    train = 1# Whether to train or load a trained model
     model_file = 'model.h5'
+    use_states = True
+    state_file = 'state.npy'
 
     # Train
     if train:
         compile_model(m)
-        if 0:
-            for i in range(train_epochs):
-                hist = m.fit(x, y, nb_epoch=1, batch_size=batch_size, shuffle=False, verbose=2)
-                m.reset_states()
+        if 1:
+            loss = np.zeros(train_epochs)
+            for epoch in range(train_epochs):
+                for i in range(len(x)):
+                    loss[epoch] = m.train_on_batch(x[i].reshape(1, 1, 2), y[i].reshape(1, 2))
+                print("Epoch : {0:d} loss: {1:f}".format(epoch, loss[epoch]))
         else:
             hist = m.fit(x, y, nb_epoch=train_epochs, batch_size=batch_size, shuffle=False, verbose=2)
+            dump_train_history(hist.history, False, 'history_a.log')
 
         save_model(m, model_file)
-        dump_train_history(hist.history, False, 'history_a.log')
+
+        if use_states:
+            # save_state
+            states = np.array([K.get_value(s) for s,_ in m.state_updates])
+            np.save(state_file, states)
 
     # Test
     if not train:
@@ -85,11 +98,22 @@ def run_part_a(m, x, y, batch_size):
     mse = np.zeros(test_trajectories)
 
     y_prev = np.array([0., 0.])
+
+    if use_states:
+    # Load states
+        states = np.load(state_file)
+        for (d,_), s in zip(m.state_updates, states):
+            K.set_value(d, s)
+
     # Predict() does not use the states generated during training
     for t in range(test_trajectories):
         for i in range(len(x)):
-            y_pred[t, i] = m.predict_on_batch(y_prev.reshape(batch_size, 1, -1))
-            y_prev = y_pred[t, i]
+            if 0:
+                y_pred[t, i] = m.predict_on_batch(x[i].reshape(batch_size, 1, -1))
+            else:
+                y_pred[t, i] = m.predict_on_batch(y_prev.reshape(batch_size, 1, -1))
+                y_prev = y_pred[t, i]
+
         mse[t] = np.sum(np.linalg.norm((y_pred[t] - y), axis=1) ** 2)/len(x)
 
     print('Part (a) MSE: ', mse)
@@ -97,7 +121,7 @@ def run_part_a(m, x, y, batch_size):
     if 1:
         plt.figure()
         original = y
-        predicted = y_pred[9, :, :]
+        predicted = y_pred[0, :, :]
         plt.plot(original[:, 0], original[:, 1]) # Original input
         plt.plot(predicted[:, 0], predicted[:, 1])
         plt.savefig('plot_0.jpg')
